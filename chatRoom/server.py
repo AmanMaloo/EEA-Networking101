@@ -1,63 +1,128 @@
-import threading
+"""Multi-client TCP chat server.
+
+Protocol (UTF-8, newline-delimited so TCP message boundaries are explicit):
+  server -> client : "NICK"            asks the client for a nickname
+  client -> server : "<nickname>"      reply to NICK
+  client -> server : "<text>"          broadcast to everyone
+  client -> server : "/whisper <nick> <text>"   private message
+  client -> server : "/users"          list who is online
+"""
 import socket
+import sys
+import threading
+
+HOST = "0.0.0.0"   # listen on all interfaces so other machines can join
+PORT = 22222
+
+clients = {}                 # nickname -> socket
+clients_lock = threading.Lock()
 
 
-host = "127.0.0.1"  #local host 
-port = 22222 #port number
+def safe_send(sock, text):
+    """Send one newline-terminated line; return False if the socket is dead."""
+    try:
+        sock.sendall((text.replace("\n", " ") + "\n").encode("utf-8"))
+        return True
+    except OSError:
+        return False
 
-server = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-server.bind((host,port))
-server.listen()
 
-clients =  []
-nicknames = []
+def broadcast(text):
+    with clients_lock:
+        targets = list(clients.values())
+    for sock in targets:
+        safe_send(sock, text)
 
-def broadcast(message):
-    for client in clients:
-        client.send(message)
 
-def handle(client):
-    while True:
-        try:
-            message = client.recv(1024).decode('ascii')
-            sender_index = clients.index(client)
-            sender_nick = nicknames[sender_index]
+def remove_client(nick, sock):
+    with clients_lock:
+        # only remove if this socket still owns the nickname
+        if clients.get(nick) is sock:
+            del clients[nick]
+            removed = True
+        else:
+            removed = False
+    try:
+        sock.close()
+    except OSError:
+        pass
+    if removed:
+        print(f"{nick} disconnected")
+        broadcast(f"{nick} left the chat")
+
+
+def handle_whisper(sock, nick, message):
+    parts = message.split(" ", 2)
+    if len(parts) < 3 or not parts[2].strip():
+        safe_send(sock, "Usage: /whisper <nickname> <message>")
+        return
+    _, target_nick, private_msg = parts
+    with clients_lock:
+        target = clients.get(target_nick)
+    if target is None:
+        safe_send(sock, f"No user with nickname '{target_nick}' found.")
+        return
+    safe_send(target, f"[Private] {nick} -> You: {private_msg}")
+    safe_send(sock, f"[Private] You -> {target_nick}: {private_msg}")
+
+
+def handle_client(sock, addr):
+    print(f"connected with {addr}")
+    reader = sock.makefile("r", encoding="utf-8", errors="replace", newline="\n")
+    nick = None
+    try:
+        # --- handshake: ask for a nickname ---
+        if not safe_send(sock, "NICK"):
+            return
+        requested = reader.readline().strip().replace(" ", "_")
+        if not requested:
+            return
+        with clients_lock:
+            nick = requested
+            while nick in clients:          # nicknames must be unique (whisper uses them)
+                nick += "_"
+            clients[nick] = sock
+        safe_send(sock, f"connected to chat server as {nick}")
+        broadcast(f"{nick} joined the chat")
+
+        # --- main loop: one line == one message ---
+        for line in reader:                 # ends when the client disconnects
+            message = line.strip()
+            if not message:
+                continue
             if message.startswith("/whisper"):
-                parts = message.split(" ", 2)
-                if len(parts) < 3:
-                    client.send("Usage: /whisper <nickname> <message>".encode('ascii'))
-                    continue
-
-                _, target_nick, private_msg = parts
-                if target_nick in nicknames:
-                    target_index = nicknames.index(target_nick)
-                    target_client = clients[target_index]
-                    target_client.send(f"[Private] {sender_nick} -> You: {private_msg}".encode('ascii'))
-                    client.send(f"[Private] You -> {target_nick}: {private_msg}".encode('ascii'))
-                else:
-                    client.send(f"No user with nickname '{target_nick}' found.".encode('ascii'))
+                handle_whisper(sock, nick, message)
+            elif message == "/users":
+                with clients_lock:
+                    online = ", ".join(clients)
+                safe_send(sock, f"Online: {online}")
             else:
-                broadcast(f'{sender_nick} : {message}'.encode('ascii'))
-        except:
-            index = clients.index(client)
-            client.close()
-            nickname = nicknames.pop(index)
-            clients.pop(index)
-            broadcast(f"{nickname} left the chat".encode('ascii'))
-            break
+                broadcast(f"{nick} : {message}")
+    except (OSError, ValueError):
+        pass
+    finally:
+        if nick is not None:
+            remove_client(nick, sock)
+        else:
+            try:
+                sock.close()
+            except OSError:
+                pass
 
-def receive():
+
+def start_server(host=HOST, port=PORT):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen()
+    print(f"Server is listening on {host}:{port}...")
     while True:
-        client,addr = server.accept()
-        print(f"connected with {str(addr)}")
-        client.send("NICK".encode('ascii'))
-        nickname = client.recv(1024).decode('ascii')
-        broadcast(f"{nickname} joined the chat".encode('ascii'))
-        clients.append(client)
-        nicknames.append(nickname)
-        client.send('connected to chat server'.encode('ascii'))
-        thread = threading.Thread(target=handle,args=(client,))
-        thread.start()
+        sock, addr = server.accept()
+        threading.Thread(target=handle_client, args=(sock, addr), daemon=True).start()
 
-print("Server is listening...")
-receive()
+
+if __name__ == "__main__":
+    try:
+        start_server(port=int(sys.argv[1]) if len(sys.argv) > 1 else PORT)
+    except KeyboardInterrupt:
+        print("\nServer stopped.")

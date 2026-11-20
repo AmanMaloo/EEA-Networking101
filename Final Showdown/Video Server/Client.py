@@ -74,7 +74,10 @@ class Client:
 		"""Teardown button handler."""
 		self.sendRtspRequest(self.TEARDOWN)		
 		self.master.destroy() # Close the gui window
-		os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
+		try:
+			os.remove(CACHE_FILE_NAME + str(self.sessionId) + CACHE_FILE_EXT) # Delete the cache image from video
+		except OSError:
+			pass # nothing was ever played, so no cache file exists
 
 	def pauseMovie(self):
 		"""Pause button handler."""
@@ -84,10 +87,11 @@ class Client:
 	def playMovie(self):
 		"""Play button handler."""
 		if self.state == self.READY:
-			# Create a new thread to listen for RTP packets
-			threading.Thread(target=self.listenRtp).start()
+			# Create the event BEFORE the listener thread starts (it reads it)
 			self.playEvent = threading.Event()
 			self.playEvent.clear()
+			# Create a new thread to listen for RTP packets
+			threading.Thread(target=self.listenRtp, daemon=True).start()
 			self.sendRtspRequest(self.PLAY)
 	
 	def listenRtp(self):		
@@ -107,13 +111,12 @@ class Client:
 						self.updateMovie(self.writeFrame(rtpPacket.getPayload()))
 			except:
 				# Stop listening upon requesting PAUSE or TEARDOWN
-				if self.playEvent.isSet(): 
+				if self.playEvent.is_set(): 
 					break
 				
 				# Upon receiving ACK for TEARDOWN request,
 				# close the RTP socket
 				if self.teardownAcked == 1:
-					self.rtpSocket.shutdown(socket.SHUT_RDWR)
 					self.rtpSocket.close()
 					break
 					
@@ -148,7 +151,7 @@ class Client:
 		
 		# Setup request
 		if requestCode == self.SETUP and self.state == self.INIT:
-			threading.Thread(target=self.recvRtspReply).start()
+			threading.Thread(target=self.recvRtspReply, daemon=True).start()
 			# Update RTSP sequence number.
 			# ...
 			self.rtspSeq += 1
@@ -198,19 +201,28 @@ class Client:
 		# Send the RTSP request using rtspSocket.
 		# ...
 		
+		self.rtspSocket.send(request.encode("utf-8"))
+		
 		print('\nData sent:\n' + request)
 	
 	def recvRtspReply(self):
 		"""Receive RTSP reply from the server."""
 		while True:
-			reply = self.rtspSocket.recv(1024)
+			try:
+				reply = self.rtspSocket.recv(1024)
+			except OSError:
+				break
 			
-			if reply: 
-				self.parseRtspReply(reply.decode("utf-8"))
+			if not reply: # server closed the connection
+				break
+			self.parseRtspReply(reply.decode("utf-8"))
 			
 			# Close the RTSP socket upon requesting Teardown
 			if self.requestSent == self.TEARDOWN:
-				self.rtspSocket.shutdown(socket.SHUT_RDWR)
+				try:
+					self.rtspSocket.shutdown(socket.SHUT_RDWR)
+				except OSError:
+					pass
 				self.rtspSocket.close()
 				break
 	

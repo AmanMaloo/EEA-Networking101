@@ -1,7 +1,7 @@
 #server code
 import socket
 
-def start_udp_server(ip='172.23.38.220', port=12345):
+def start_udp_server(ip='0.0.0.0', port=12345):
     # Create a UDP socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     

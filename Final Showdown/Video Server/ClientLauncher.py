@@ -9,7 +9,8 @@ if __name__ == "__main__":
 		rtpPort = sys.argv[3]
 		fileName = sys.argv[4]	
 	except:
-		print("[Usage: ClientLauncher.py Server_name Server_port RTP_port Video_file]\n")	
+		print("[Usage: ClientLauncher.py Server_name Server_port RTP_port Video_file]\n")
+		sys.exit(1)
 	
 	root = Tk()
 	
@@ -17,4 +18,4 @@ if __name__ == "__main__":
 	app = Client(root, serverAddr, serverPort, rtpPort, fileName)
 	app.master.title("RTPClient")	
 	root.mainloop()
-	
+	

@@ -31,10 +31,32 @@ class ServerWorker:
 		"""Receive RTSP request from the client."""
 		connSocket = self.clientInfo['rtspSocket'][0]
 		while True:            
-			data = connSocket.recv(256)
-			if data:
-				print("Data received:\n" + data.decode("utf-8"))
+			try:
+				data = connSocket.recv(256)
+			except OSError:
+				break
+			if not data: # client disconnected
+				break
+			print("Data received:\n" + data.decode("utf-8"))
+			try:
 				self.processRtspRequest(data.decode("utf-8"))
+			except (IndexError, ValueError):
+				print("Malformed RTSP request ignored")
+		self.cleanup()
+
+	def cleanup(self):
+		"""Stop streaming and release sockets when the client goes away."""
+		if 'event' in self.clientInfo:
+			self.clientInfo['event'].set()
+		if 'rtpSocket' in self.clientInfo:
+			try:
+				self.clientInfo['rtpSocket'].close()
+			except OSError:
+				pass
+		try:
+			self.clientInfo['rtspSocket'][0].close()
+		except OSError:
+			pass
 	
 	def processRtspRequest(self, data):
 		"""Process RTSP request sent from the client."""
@@ -60,6 +82,7 @@ class ServerWorker:
 					self.state = self.READY
 				except IOError:
 					self.replyRtsp(self.FILE_NOT_FOUND_404, seq[1])
+					return # do not pretend SETUP succeeded
 				
 				# Generate a randomized RTSP session ID
 				self.clientInfo['session'] = randint(100000, 999999)
@@ -99,13 +122,18 @@ class ServerWorker:
 		# Process TEARDOWN request
 		elif requestType == self.TEARDOWN:
 			print("processing TEARDOWN\n")
+			if self.state == self.INIT:
+				return # nothing was set up
 
-			self.clientInfo['event'].set()
+			if 'event' in self.clientInfo:
+				self.clientInfo['event'].set()
 			
 			self.replyRtsp(self.OK_200, seq[1])
 			
-			# Close the RTP socket
-			self.clientInfo['rtpSocket'].close()
+			# Close the RTP socket (only exists if PLAY was ever issued)
+			if 'rtpSocket' in self.clientInfo:
+				self.clientInfo['rtpSocket'].close()
+			self.state = self.INIT
 			
 	def sendRtp(self):
 		"""Send RTP packets over UDP."""
@@ -113,10 +141,12 @@ class ServerWorker:
 			self.clientInfo['event'].wait(0.05) 
 			
 			# Stop sending if request is PAUSE or TEARDOWN
-			if self.clientInfo['event'].isSet(): 
+			if self.clientInfo['event'].is_set(): 
 				break 
 				
 			data = self.clientInfo['videoStream'].nextFrame()
+			if not data: # end of video file: stop instead of spinning forever
+				break
 			if data: 
 				frameNumber = self.clientInfo['videoStream'].frameNbr()
 				try:
@@ -157,5 +187,7 @@ class ServerWorker:
 		# Error messages
 		elif code == self.FILE_NOT_FOUND_404:
 			print("404 NOT FOUND")
+			self.clientInfo['rtspSocket'][0].send(('RTSP/1.0 404 NOT FOUND\nCSeq: ' + seq + '\nSession: 0').encode())
 		elif code == self.CON_ERR_500:
 			print("500 CONNECTION ERROR")
+			self.clientInfo['rtspSocket'][0].send(('RTSP/1.0 500 CONNECTION ERROR\nCSeq: ' + seq + '\nSession: 0').encode())
