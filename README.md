@@ -31,31 +31,3 @@ A multi-client chat room over TCP. The server handles each client in its own thr
 | `gui_client.py` | Tkinter GUI client |
 | `chat_entry.py` | GUI launcher: host a room or join someone else's |
 
-### Running
-
-```bash
-# Start the server (optional port argument)
-python chatRoom/server.py [port]
-
-# Terminal client (defaults: 127.0.0.1 22222)
-python chatRoom/cli_client.py [server_host] [port]
-
-# GUI client
-python chatRoom/gui_client.py [server_host] [port]
-
-# GUI launcher (host or join)
-python chatRoom/chat_entry.py
-```
-
-To let others on your network join, share your LAN IP (`ipconfig getifaddr en0` on macOS) and have them use it as `server_host`.
-
-### Protocol
-
-| Direction | Message | Meaning |
-|---|---|---|
-| server → client | `NICK` | Ask the client for a nickname |
-| client → server | `<nickname>` | Reply to `NICK` (duplicates get `_` appended) |
-| client → server | `<text>` | Broadcast to everyone |
-| client → server | `/whisper <nick> <text>` | Private message |
-| client → server | `/users` | List who is online |
-| client (local) | `/quit` | Leave the chat (CLI client) |
